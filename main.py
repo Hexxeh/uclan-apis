@@ -165,6 +165,12 @@ class Timetable(object):
 
 
 class MainHandler(webapp2.RequestHandler):
+	# Specify permitted usernames in the list below
+	ACL = []
+
+	def is_permitted_by_acl(self, username):
+		return username in self.ACL
+
 	def error(self, code, message):
 		result = {
 			"status": "error",
@@ -185,6 +191,10 @@ class MainHandler(webapp2.RequestHandler):
 
 		if username == None or password == None:
 			self.error("missing_parameter", "Username or password missing")
+			return
+
+		if not self.is_permitted_by_acl(username):
+			self.error("permission_denied", "Your username is not allowed by the ACL")
 			return
 
 		timetable = Timetable(username, password)
