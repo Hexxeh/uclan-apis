@@ -140,8 +140,8 @@ class Timetable(object):
 				room = " ".join(room.split()[1:]).title()
 			elif re.match("^"+building+", (.*)", room) != None:
 				room = re.findall("^"+building+", (.*)", room)[0]
-			elif re.match("\w+\d+", room) == None:
-				room = room.title()
+			elif re.match("\w+\d+", room) != None:
+				pass
 
 			event["room"] = room
 			event["building"] = building
