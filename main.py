@@ -1,18 +1,26 @@
 from bs4 import BeautifulSoup
-from google.appengine.api import urlfetch
-import base64, datetime, json, lxml, re, urllib, webapp2
+from google.appengine.api import memcache, urlfetch
+import base64, datetime, hashlib, json, lxml, re, urllib, webapp2
 
 class Timetable(object):
-	TIMETABLE_URL = "https://weeklytimetable.uclan.ac.uk/"
+	TIMETABLE_URL = "https://apps.uclan.ac.uk/WeeklyTimetable/"
+	CACHE_SRCDATA = True
 
 	def __init__(self, username, password):
 		self.username = username
 		self.password = password
 		self.timetable_html_str = None
 
-	def store_result(self, result):
-		self.timetable_html_str = result.content
+	def store_result(self, content):
+		self.timetable_html_str = content
 		self.timetable_html = BeautifulSoup(self.timetable_html_str, "lxml")
+
+	def get_cache_key(self, date):
+		m = hashlib.sha1()
+		m.update(self.username)
+		m.update(self.password)
+		m.update(date)
+		return m.hexdigest()
 
 	def do_request(self, method = "GET", payload = None):
 		headers = {
@@ -33,22 +41,17 @@ class Timetable(object):
 
 		result = urlfetch.fetch(self.TIMETABLE_URL, payload=payload, method=methods[method], headers=headers)
 		if result.status_code == 200:
-			self.store_result(result)
+			self.store_result(result.content)
 			return True
 		else:
 			return False
 
-	def get(self):
-		if self.timetable_html_str == None:
-			if not self.do_request():
-				return False
-
-		return self._build_timetable()
-
 	def get_week(self, wb_str):
 		try:
 			wb = datetime.date.today()
-			if wb_str == "next_week":
+			if wb_str == "this_week":
+				pass
+			elif wb_str == "next_week":
 				wb += datetime.timedelta(days=7-wb.weekday())
 			elif wb_str == "last_week":
 				wb -= datetime.timedelta(days=7+wb.weekday())
@@ -61,29 +64,42 @@ class Timetable(object):
 
 			wb = wb.strftime("%A %d %B %Y")
 		except:
+			logging.warn("failed date parse")
 			return False
 
-		if not self.get():
-			return False
+		if self.CACHE_SRCDATA:
+			cached_srcdata = memcache.get(self.get_cache_key(wb))
+			if cached_srcdata:
+				cached_srcdata = json.loads(cached_srcdata)
+				return cached_srcdata
 
-		viewstate = self.timetable_html.find("input", id="__VIEWSTATE")["value"]
-		eventvalidation = self.timetable_html.find("input", id="__EVENTVALIDATION")["value"]
-		
-		payload = urllib.urlencode({
-			"ctl00$ScriptManager1": "ctl00$MainContent$UpdatePanel1|ctl00$MainContent$dateChangeSubmit",
-			"__EVENTTARGET": "",
-			"__LASTFOCUS": "",
-			"__VIEWSTATE": viewstate,
-			"__EVENTVALIDATION": eventvalidation,
-			"__ASYNCPOST": "true",
-			"ctl00$MainContent$tbCurrentDate": wb,
-			"ctl00$MainContent$dateChangeSubmit":"",
-		})
+		if self.timetable_html_str == None:
+			if not self.do_request():
+				return False
 
-		if not self.do_request("POST", payload):
-			return False
+		if wb_str != "this_week":
+			viewstate = self.timetable_html.find("input", id="__VIEWSTATE")["value"]
+			eventvalidation = self.timetable_html.find("input", id="__EVENTVALIDATION")["value"]
+			
+			payload = urllib.urlencode({
+				"ctl00$ScriptManager1": "ctl00$MainContent$UpdatePanel1|ctl00$MainContent$dateChangeSubmit",
+				"__EVENTTARGET": "",
+				"__LASTFOCUS": "",
+				"__VIEWSTATE": viewstate,
+				"__EVENTVALIDATION": eventvalidation,
+				"__ASYNCPOST": "true",
+				"ctl00$MainContent$tbCurrentDate": wb,
+				"ctl00$MainContent$dateChangeSubmit":"",
+			})
 
-		return self._build_timetable()
+			if not self.do_request("POST", payload):
+				return False
+
+		timetable = self._build_timetable()
+		if self.CACHE_SRCDATA:
+			memcache.set(self.get_cache_key(wb), json.dumps(timetable), time=60*60*24)
+
+		return timetable
 
 	def _build_timetable(self):
 		timetable = {
@@ -142,6 +158,8 @@ class Timetable(object):
 		except:
 			pass
 
+		event = dict((a, b) for (a, b) in event.iteritems() if b is not None)
+
 		return event
 
 	def _get_day(self, day):
@@ -153,7 +171,7 @@ class Timetable(object):
 			return None
 
 		day = {
-			"day": day.select(".TimeTableRowHeader")[0].contents[0],
+			"day": day.select("td")[0].contents[0],
 			"events": day_events
 		}
 
@@ -198,15 +216,14 @@ class MainHandler(webapp2.RequestHandler):
 			return
 
 		timetable = Timetable(username, password)
-		result = timetable.get()
 
-		if date != "" and date != "this_week":
-			result = timetable.get_week(date)
+		date = "this_week" if date == "" else date
+		result = timetable.get_week(date)
 
 		if result:
 			self.write_json(result)
 		else:
-			self.error("request_failed", "Request failed, check your username and password are correct")
+			self.error("request_failed", "Request failed, check your username/password are correct and that any specified date was valid")
 
 
 app = webapp2.WSGIApplication([
