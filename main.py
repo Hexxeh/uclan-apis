@@ -172,6 +172,7 @@ class Timetable(object):
 
 		day = {
 			"day": day.select("td")[0].contents[0],
+			"date": day.select("td")[0].contents[2],
 			"events": day_events
 		}
 
